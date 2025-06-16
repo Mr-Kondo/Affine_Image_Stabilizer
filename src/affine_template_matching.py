@@ -26,7 +26,7 @@ import queue
 import shutil
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -43,8 +43,8 @@ def _quad(a, b, c):
     return 0.0 if d == 0 else 0.5 * (a - c) / d
 
 
-def refine(mat: np.ndarray, loc: Tuple[int, int]):
-    x, y = loc
+def refine(mat: np.ndarray, loc: Sequence[int]) -> Tuple[float, float]:
+    x, y = loc[0], loc[1]
     if 0 < x < mat.shape[1] - 1 and 0 < y < mat.shape[0] - 1:
         return _quad(mat[y, x - 1], mat[y, x], mat[y, x + 1]), _quad(mat[y - 1, x], mat[y, x],
                                                                      mat[y + 1, x])
@@ -110,7 +110,7 @@ class TemplateMatcher:
         roi = crop_rect(g, t['cx'], t['cy'], t['shx'], t['shy'])
         res = cv2.matchTemplate(roi, t['patch'], cv2.TM_CCORR_NORMED)
         *_, loc = cv2.minMaxLoc(res)
-        dx, dy = refine(res, loc)
+        dx, dy = refine(res, tuple(loc))
         mx = t['cx'] - t['shx'] + loc[0] + dx + t['th']
         my = t['cy'] - t['shy'] + loc[1] + dy + t['th']
         return mx, my
@@ -187,8 +187,9 @@ class AffineCorrector:
         if q:
             q.put(('setmax', len(frames) - 1))
             done = 0
-        out = cv2.VideoWriter(str(self.out), cv2.VideoWriter_fourcc(*'mp4v'),
-                              fps if fps > 0 else 30, (w, h))
+        fourcc_fn = cv2.VideoWriter_fourcc if hasattr(
+            cv2, "VideoWriter_fourcc") else cv2.VideoWriter.fourcc
+        out = cv2.VideoWriter(str(self.out), fourcc_fn(*'mp4v'), fps if fps > 0 else 30, (w, h))
         for fp in tqdm(frames[1:], desc='warp'):
             n = int(fp.stem.split('_')[1])
             img = cv2.imread(str(fp))
