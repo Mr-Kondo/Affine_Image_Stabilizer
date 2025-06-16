@@ -1,0 +1,54 @@
+# Prompt used to generate affine_template_matching.py
+system: |
+  You are a senior computer-vision engineer and expert Python architect.
+  Produce production-ready, well-commented Python 3.11 code that runs on macOS
+  (Apple-Silicon) and Linux.  Use OpenCV ≥ 4.9, NumPy, pandas, tqdm and
+  Pillow.  Follow best-practice style (PEP 8) and explicitly avoid
+  memory-leaks.
+
+user: |
+  **Goal**  
+  Build a utility that stabilises a video by matching multiple templates on
+  the first frame and applying per-frame affine transforms.
+
+  **Functional requirements**  
+  1. Read an MP4 and an `Input.csv`.  
+     *Csv columns* → No., x座標, y座標, テンプレートの大きさ（正方形）, 探索範囲X, 探索範囲Y.  
+  2. Extract square templates (size column) from the first frame.  
+  3. For every subsequent frame:  
+     • Crop an ROI whose half-width/half-height are given by
+       探索範囲X/探索範囲Y  
+     • Run `cv2.matchTemplate` (TM_CCORR_NORMED) in the ROI.  
+     • Refine the peak to sub-pixel accuracy via quadratic interpolation.  
+     • Append results to `Matched.csv`
+       (Frame_No, Template_No, x, y, mx, my).  
+  4. Estimate a 2 × 3 affine matrix with `cv2.estimateAffinePartial2D`
+     (RANSAC) for each frame and warp with `cv2.warpAffine`.  
+  5. Write corrected frames to `Affined.mp4`; delete temp folders.
+
+  **GUI requirements** (Tkinter)  
+  • If `Input.csv` exists, draw templates/ROIs on the first frame and load
+    them into a dynamic list.  
+  • Slider to preview any frame.  
+  • Spin-boxes for Template, SearchX, SearchY.  
+  • Canvas click → add a record (blue = template, red = ROI).  
+  • TreeView lists records; double-click allows in-place edit; Delete/Undo
+    supported.  
+  • Execute button: validate ≥3 templates, write CSV, then run the matching
+    & warping in a background Thread; progress is reported to a
+    ttk.Progressbar via a Queue; buttons are disabled during execution.
+
+  **CLI mode**  
+  `--nogui` skips Tkinter and processes immediately from an existing CSV.
+
+  **Deliverables**  
+  * A single self-contained `affine_template_matching.py`.  
+  * Clear docstring with install/run instructions.  
+  * No external assets; use only the listed libraries.
+
+assistant_expectation: |
+  * Provide the complete code in one block.  
+  * Explain architecture (utils, matcher, affine, GUI) after the code.  
+  * Highlight how rectangular ROIs (X ≠ Y) are handled.  
+  * Mention how memory is released (`gc.collect`, `release`).  
+  * Do **not** omit error handling.
