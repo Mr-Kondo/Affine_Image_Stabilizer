@@ -6,3 +6,4 @@
       - tk-inter  
       - pillow  
       - tqdm  
+    ChatGPT o3
