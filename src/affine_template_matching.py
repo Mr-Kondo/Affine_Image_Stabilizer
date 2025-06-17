@@ -26,7 +26,7 @@ import queue
 import shutil
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Literal, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -77,6 +77,25 @@ def crop_rect(src: np.ndarray, cx: int, cy: int, hw: int, hh: int):
     return roi
 
 
+# Crop a rectangle using individual pixel margins measured from the centre.
+def crop_lrbt(src: np.ndarray, cx: int, cy: int, left: int, right: int, top: int,
+              bottom: int) -> np.ndarray:
+    """
+    Crop a rectangle using individual pixel margins measured from the centre:
+    left, right, top, bottom (all >=0). Pads with zeros where the window
+    crosses image borders.
+    """
+    x0, y0 = cx - left, cy - top
+    x1, y1 = cx + right, cy + bottom
+    H, W = src.shape[:2]
+    pl, pt = max(0, -x0), max(0, -y0)
+    pr, pb = max(0, x1 - W), max(0, y1 - H)
+    roi = src[max(0, y0):min(H, y1), max(0, x0):min(W, x1)]
+    if any((pl, pt, pr, pb)):
+        roi = cv2.copyMakeBorder(roi, pt, pb, pl, pr, cv2.BORDER_CONSTANT)
+    return roi
+
+
 # =============================================================================
 # Matcher
 # =============================================================================
@@ -94,25 +113,29 @@ class TemplateMatcher:
         out = []
         for _, r in df.iterrows():
             half_tpl = int(r['テンプレートの大きさ（正方形）']) // 2
-            half_x = int(r['探索範囲X']) // 2
-            half_y = int(r['探索範囲Y']) // 2
+            top = int(r['探索上'])
+            bottom = int(r['探索下'])
+            left = int(r['探索左'])
+            right = int(r['探索右'])
             out.append(
                 dict(id=int(r['No.']),
                      cx=int(r['x座標']),
                      cy=int(r['y座標']),
                      th=half_tpl,
-                     shx=half_x,
-                     shy=half_y,
+                     t=top,
+                     b=bottom,
+                     l=left,
+                     r=right,
                      patch=crop(self.first, int(r['x座標']), int(r['y座標']), half_tpl)))
         return out
 
     def _match(self, g: np.ndarray, t: Dict[str, Any]):
-        roi = crop_rect(g, t['cx'], t['cy'], t['shx'], t['shy'])
+        roi = crop_lrbt(g, t['cx'], t['cy'], t['l'], t['r'], t['t'], t['b'])
         res = cv2.matchTemplate(roi, t['patch'], cv2.TM_CCORR_NORMED)
         *_, loc = cv2.minMaxLoc(res)
         dx, dy = refine(res, tuple(loc))
-        mx = t['cx'] - t['shx'] + loc[0] + dx + t['th']
-        my = t['cy'] - t['shy'] + loc[1] + dy + t['th']
+        mx = t['cx'] - t['l'] + loc[0] + dx + t['th']
+        my = t['cy'] - t['t'] + loc[1] + dy + t['th']
         return mx, my
 
     def run(self, out_csv='Matched.csv', q: queue.Queue | None = None):
@@ -217,6 +240,12 @@ class TemplateGUI:
         from tkinter import messagebox, simpledialog, ttk
 
         from PIL import Image, ImageTk
+
+        # For Pillow ≥10 compatibility: Resampling alias fallback
+        try:
+            ResamplingFilter = Image.Resampling.LANCZOS
+        except AttributeError:
+            ResamplingFilter = Image.LANCZOS
         self.tk = tk
         self.ttk = ttk
         self.messagebox = messagebox
@@ -227,6 +256,7 @@ class TemplateGUI:
         self.total = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.tpls: List[Dict[str, Any]] = []
         self.hist: List[Dict[str, Any]] = []
+        self.zoom = 1.0
         self.root = tk.Tk()
         self.root.title('Template Designer')
         self._build_widgets()
@@ -240,30 +270,55 @@ class TemplateGUI:
         ctl = ttk.Frame(self.root)
         ctl.pack(fill='x')
         ttk.Label(ctl, text='Template').pack(side='left')
-        self.sp_tpl = ttk.Spinbox(ctl, from_=8, to=512, increment=2, width=6)
-        self.sp_tpl.set(64)
-        self.sp_tpl.pack(side='left')
-        ttk.Label(ctl, text='SearchX').pack(side='left')
-        self.sp_src_x = ttk.Spinbox(ctl, from_=16, to=1024, increment=4, width=6)
-        self.sp_src_x.set(128)
-        self.sp_src_x.pack(side='left')
-        ttk.Label(ctl, text='SearchY').pack(side='left')
-        self.sp_src_y = ttk.Spinbox(ctl, from_=16, to=1024, increment=4, width=6)
-        self.sp_src_y.set(128)
-        self.sp_src_y.pack(side='left')
+        # Replace Spinbox with Entry for template size
+        self.ent_tpl = ttk.Entry(ctl, width=6)
+        self.ent_tpl.insert(0, "64")
+        self.ent_tpl.pack(side='left')
+        # Replace Spinboxes for search margins with Entry widgets
+        ttk.Label(ctl, text='SearchLeft').pack(side='left')
+        self.ent_left = ttk.Entry(ctl, width=6)
+        self.ent_left.insert(0, "128")
+        self.ent_left.pack(side='left')
+        ttk.Label(ctl, text='SearchRight').pack(side='left')
+        self.ent_right = ttk.Entry(ctl, width=6)
+        self.ent_right.insert(0, "128")
+        self.ent_right.pack(side='left')
+        ttk.Label(ctl, text='SearchTop').pack(side='left')
+        self.ent_top = ttk.Entry(ctl, width=6)
+        self.ent_top.insert(0, "128")
+        self.ent_top.pack(side='left')
+        ttk.Label(ctl, text='SearchBottom').pack(side='left')
+        self.ent_bottom = ttk.Entry(ctl, width=6)
+        self.ent_bottom.insert(0, "128")
+        self.ent_bottom.pack(side='left')
+        # Buttons
         self.btn_delete = ttk.Button(ctl, text='Delete', command=self._del)
         self.btn_delete.pack(side='right')
         self.btn_undo = ttk.Button(ctl, text='Undo', command=self._undo)
         self.btn_undo.pack(side='right')
         self.btn_execute = ttk.Button(ctl, text='Execute', command=self._exec)
         self.btn_execute.pack(side='right')
+        # Zoom in/out buttons
+        self.btn_zoom_in = ttk.Button(ctl, text='+', command=self._zoom_in)
+        self.btn_zoom_in.pack(side='right')
+        self.btn_zoom_out = ttk.Button(ctl, text='-', command=self._zoom_out)
+        self.btn_zoom_out.pack(side='right')
         # tree
         self.tree = ttk.Treeview(self.root,
-                                 columns=('cx', 'cy', 'tpl', 'srcx', 'srcy'),
+                                 columns=('no', 'cx', 'cy', 'tpl', 'l', 'r', 't', 'b'),
                                  show='headings',
                                  height=4)
-        for c in ('cx', 'cy', 'tpl', 'srcx', 'srcy'):
-            self.tree.heading(c, text=c)
+        for col, text in [
+            ('no', 'No.'),
+            ('cx', 'x座標'),
+            ('cy', 'y座標'),
+            ('tpl', 'テンプレートサイズ'),
+            ('l', '探索左'),
+            ('r', '探索右'),
+            ('t', '探索上'),
+            ('b', '探索下'),
+        ]:
+            self.tree.heading(col, text=text)
         self.tree.bind('<Double-1>', self._edit)
         self.tree.pack(fill='x')
         # progress bar
@@ -278,7 +333,11 @@ class TemplateGUI:
         self.scale.pack(fill='x')
         self.canvas = self.tk.Canvas(self.root)
         self.canvas.pack()
+        # Status label below canvas
+        self.status = self.ttk.Label(self.root, text="x: -, y: -")
+        self.status.pack(fill='x', pady=2)
         self.canvas.bind('<Button-1>', self._click)
+        self.canvas.bind('<Motion>', self._on_motion)
         self._photo = None
 
     # -------- data io --------
@@ -292,8 +351,10 @@ class TemplateGUI:
             self._add_tpl(int(r['x座標']),
                           int(r['y座標']),
                           int(r['テンプレートの大きさ（正方形）']),
-                          int(r['探索範囲X']),
-                          int(r['探索範囲Y']),
+                          int(r['探索左']),
+                          int(r['探索右']),
+                          int(r['探索上']),
+                          int(r['探索下']),
                           existing=True,
                           id=int(r['No.']))
 
@@ -301,19 +362,30 @@ class TemplateGUI:
                  cx: int,
                  cy: int,
                  tpl: int,
-                 srcx: int,
-                 srcy: int,
+                 left: int,
+                 right: int,
+                 top: int,
+                 bottom: int,
                  existing=False,
                  id: int | None = None):
         if not existing:
             id = len(self.tpls) + 1
-        d = dict(id=id, cx=cx, cy=cy, tpl=tpl, srcx=srcx, srcy=srcy)
+        d = dict(id=id, cx=cx, cy=cy, tpl=tpl, l=left, r=right, t=top, b=bottom)
         self.tpls.append(d)
-        self.tree.insert('', 'end', iid=d['id'], values=(cx, cy, tpl, srcx, srcy))
+        self.tree.insert('',
+                         'end',
+                         iid=d['id'],
+                         values=(d['id'], cx, cy, tpl, left, right, top, bottom))
 
     # -------- UI actions --------
     def _show(self, idx: int):
         from PIL import Image, ImageTk
+
+        # For Pillow ≥10 compatibility: Resampling alias fallback
+        try:
+            ResamplingFilter = Image.Resampling.LANCZOS
+        except AttributeError:
+            ResamplingFilter = Image.LANCZOS
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx - 1)
         ok, frame = self.cap.read()
         if not ok:
@@ -322,11 +394,22 @@ class TemplateGUI:
         for t in self.tpls:
             cx, cy = t['cx'], t['cy']
             ht = t['tpl'] // 2
-            hw = t['srcx'] // 2
-            hh = t['srcy'] // 2
+            hl = t['l']
+            hr = t['r']
+            ht_margin = t['t']
+            hb = t['b']
+            # Draw template rectangle (red)
             cv2.rectangle(rgb, (cx - ht, cy - ht), (cx + ht, cy + ht), (0, 0, 255), 2)
-            cv2.rectangle(rgb, (cx - hw, cy - hh), (cx + hw, cy + hh), (255, 0, 0), 1)
+            # Draw index label above the template rectangle
+            cv2.putText(rgb, str(t['id']), (cx - ht, cy - ht - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                        (0, 255, 255), 2, cv2.LINE_AA)
+            # Draw ROI rectangle (blue)
+            cv2.rectangle(rgb, (cx - hl, cy - ht_margin), (cx + hr, cy + hb), (255, 0, 0), 1)
         img = Image.fromarray(rgb)
+        # Apply zoom if not 1.0
+        if self.zoom != 1.0:
+            w, h = img.size
+            img = img.resize((int(w * self.zoom), int(h * self.zoom)), ResamplingFilter)
         self._photo = ImageTk.PhotoImage(img)
         self.canvas.config(width=img.width, height=img.height)
         self.canvas.create_image(0, 0, anchor='nw', image=self._photo)
@@ -335,10 +418,15 @@ class TemplateGUI:
         self._show(int(float(val)))
 
     def _click(self, e):
-        tpl = int(self.sp_tpl.get()) + int(self.sp_tpl.get()) % 2
-        srcx = int(self.sp_src_x.get()) + int(self.sp_src_x.get()) % 2
-        srcy = int(self.sp_src_y.get()) + int(self.sp_src_y.get()) % 2
-        self._add_tpl(e.x, e.y, tpl, srcx, srcy)
+        tpl = int(self.ent_tpl.get()) + int(self.ent_tpl.get()) % 2
+        left = int(self.ent_left.get())
+        right = int(self.ent_right.get())
+        top = int(self.ent_top.get())
+        bottom = int(self.ent_bottom.get())
+        # Map canvas (zoomed) coordinates back to original image coordinates
+        orig_x = int(e.x / self.zoom)
+        orig_y = int(e.y / self.zoom)
+        self._add_tpl(orig_x, orig_y, tpl, left, right, top, bottom)
         self._show(int(self.scale.get()))
 
     def _del(self):
@@ -358,7 +446,7 @@ class TemplateGUI:
         self.tree.insert('',
                          'end',
                          iid=t['id'],
-                         values=(t['cx'], t['cy'], t['tpl'], t['srcx'], t['srcy']))
+                         values=(t['cx'], t['cy'], t['tpl'], t['l'], t['r'], t['t'], t['b']))
         self._show(int(self.scale.get()))
 
     def _edit(self, evt):
@@ -366,7 +454,7 @@ class TemplateGUI:
         if not iid:
             return
         row = next(t for t in self.tpls if t['id'] == int(iid))
-        for key in ('cx', 'cy', 'tpl', 'srcx', 'srcy'):
+        for key in ('cx', 'cy', 'tpl', 'l', 'r', 't', 'b'):
             val = self.simpledialog.askinteger('Edit',
                                                f'{key} value',
                                                initialvalue=row[key],
@@ -375,8 +463,24 @@ class TemplateGUI:
             if val is None:
                 return
             row[key] = val
-        self.tree.item(iid, values=(row['cx'], row['cy'], row['tpl'], row['srcx'], row['srcy']))
+        self.tree.item(iid,
+                       values=(row['cx'], row['cy'], row['tpl'], row['l'], row['r'], row['t'],
+                               row['b']))
         self._show(int(self.scale.get()))
+
+    def _on_motion(self, event):
+        # Map canvas (zoomed) coords to original
+        x = int(event.x / self.zoom)
+        y = int(event.y / self.zoom)
+        self.status.config(text=f"x: {x}, y: {y}")
+
+    def _zoom_in(self):
+        self.zoom *= 1.2
+        self._show(int(float(self.scale.get())))
+
+    def _zoom_out(self):
+        self.zoom /= 1.2
+        self._show(int(float(self.scale.get())))
 
     # -------- execute --------
     def _exec(self):
@@ -385,9 +489,9 @@ class TemplateGUI:
             return
         with open(self.csv, 'w', newline='') as f:
             w = csv.writer(f)
-            w.writerow(['No.', 'x座標', 'y座標', 'テンプレートの大きさ（正方形）', '探索範囲X', '探索範囲Y'])
+            w.writerow(['No.', 'x座標', 'y座標', 'テンプレートの大きさ（正方形）', '探索左', '探索右', '探索上', '探索下'])
             [
-                w.writerow([t['id'], t['cx'], t['cy'], t['tpl'], t['srcx'], t['srcy']])
+                w.writerow([t['id'], t['cx'], t['cy'], t['tpl'], t['l'], t['r'], t['t'], t['b']])
                 for t in self.tpls
             ]
         self.btn_delete.config(state='disabled')
