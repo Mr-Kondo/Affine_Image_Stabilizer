@@ -1,54 +1,63 @@
 # Prompt used to generate affine_template_matching.py
 system: |
-  You are a senior computer-vision engineer and expert Python architect.
-  Produce production-ready, well-commented Python 3.11 code that runs on macOS
-  (Apple-Silicon) and Linux.  Use OpenCV ≥ 4.9, NumPy, pandas, tqdm and
-  Pillow.  Follow best-practice style (PEP 8) and explicitly avoid
-  memory-leaks.
+  You are a senior computer-vision engineer and Python architect.
+  Produce production-quality Python 3.11 code that runs on macOS (Apple Silicon)
+  and Linux.  Use OpenCV ≥ 4.9, NumPy, pandas, tqdm, Pillow, and the standard
+  library only.  Follow best practices (PEP 8, explicit resource release) and
+  avoid memory leaks.  The deliverable must be a **single** self-contained file
+  named `affine_template_matching.py`, fully commented and ready to run.
 
 user: |
-  **Goal**  
-  Build a utility that stabilises a video by matching multiple templates on
-  the first frame and applying per-frame affine transforms.
+  ## ゴール
+  動画をテンプレートマッチングで安定化（アフィン補正）するツールを実装せよ。
+  GUI と CLI の両モードを持ち、GUI は完全にインタラクティブ。
 
-  **Functional requirements**  
-  1. Read an MP4 and an `Input.csv`.  
-     *Csv columns* → No., x座標, y座標, テンプレートの大きさ（正方形）, 探索範囲X, 探索範囲Y.  
-  2. Extract square templates (size column) from the first frame.  
-  3. For every subsequent frame:  
-     • Crop an ROI whose half-width/half-height are given by
-       探索範囲X/探索範囲Y  
-     • Run `cv2.matchTemplate` (TM_CCORR_NORMED) in the ROI.  
-     • Refine the peak to sub-pixel accuracy via quadratic interpolation.  
-     • Append results to `Matched.csv`
-       (Frame_No, Template_No, x, y, mx, my).  
-  4. Estimate a 2 × 3 affine matrix with `cv2.estimateAffinePartial2D`
-     (RANSAC) for each frame and warp with `cv2.warpAffine`.  
-  5. Write corrected frames to `Affined.mp4`; delete temp folders.
+  ## 機能要件
+  1. MP4 と `Input.csv` を読み込む。  
+     CSV 列:  
+     - `No.` 連番  
+     - `x座標`, `y座標` - テンプレート中心  
+     - `テンプレートの大きさ（正方形）`  
+     - `探索左`, `探索右`, `探索上`, `探索下` (中心からのピクセルマージン)
+  2. 1 フレーム目からテンプレートを切り出し、以降の各フレームで
+     `cv2.matchTemplate(T​M_CCORR_NORMED)` を矩形 ROI 内で実行。
+     - ROI は上記４マージンで定義。  
+     - ピークは 3×3 の二次近似でサブピクセル化。  
+     - 各一致を `Matched.csv`
+       (Frame_No, Template_No, x, y, mx, my) に追記。
+  3. フレームごとに `cv2.estimateAffinePartial2D(RANSAC)` で
+     2×3 アフィン行列を推定し、`cv2.warpAffine` でブレ補正。
+  4. 補正後フレームを `Affined.mp4` に書き出し、一時フォルダを削除。
 
-  **GUI requirements** (Tkinter)  
-  • If `Input.csv` exists, draw templates/ROIs on the first frame and load
-    them into a dynamic list.  
-  • Slider to preview any frame.  
-  • Spin-boxes for Template, SearchX, SearchY.  
-  • Canvas click → add a record (blue = template, red = ROI).  
-  • TreeView lists records; double-click allows in-place edit; Delete/Undo
-    supported.  
-  • Execute button: validate ≥3 templates, write CSV, then run the matching
-    & warping in a background Thread; progress is reported to a
-    ttk.Progressbar via a Queue; buttons are disabled during execution.
+  ## GUI 要件 (Tkinter)
+  * 既存 `Input.csv` があれば読み込み、
+    テンプレート (赤) / ROI (青) を画像に描画しリストに反映。
+  * **Entry ウィジェット**でテンプレートサイズと  
+    `SearchLeft/Right/Top/Bottom` を自由入力可。
+  * Canvas クリックでテンプレートを追加。  
+    - ズーム倍率に無関係に元画像座標へ正規化して保存。  
+    - 画像上に **No. 番号** を描画し、TreeView の先頭列にも表示。
+  * TreeView で行をダブルクリックすると値をインライン編集。  
+    Delete/Undo 対応。
+  * スライダーで任意フレームをプレビュー。
+  * `+ / -` ボタンで画像を拡大縮小。
+    - マウス座標を常に元画像系でステータスバーに表示。
+  * Execute でテンプレート数を検証(≥3) → `Input.csv` 保存 →
+    バックグラウンド Thread でマッチ & 補正実行。  
+    進捗は `queue.Queue` で受け取り `ttk.Progressbar` に反映。
+    実行中は操作ボタンを disable。
 
-  **CLI mode**  
-  `--nogui` skips Tkinter and processes immediately from an existing CSV.
+  ## CLI モード
+  `--nogui` で Tk を使わず既存 CSV を処理。
 
-  **Deliverables**  
-  * A single self-contained `affine_template_matching.py`.  
-  * Clear docstring with install/run instructions.  
-  * No external assets; use only the listed libraries.
+  ## 実装上の注意
+  * Pillow ≥10 互換のため `Resampling.LANCZOS` フォールバックを実装。
+  * OpenCV の `VideoWriter_fourcc` / `.fourcc` 両対応。
+  * すべての重いオブジェクトを `release()` や `gc.collect()` で明示解放。
+  * マルチスレッド中の UI フリーズを避けるため
+    `after(…)` ポーリングで Queue を監視。
 
 assistant_expectation: |
-  * Provide the complete code in one block.  
-  * Explain architecture (utils, matcher, affine, GUI) after the code.  
-  * Highlight how rectangular ROIs (X ≠ Y) are handled.  
-  * Mention how memory is released (`gc.collect`, `release`).  
-  * Do **not** omit error handling.
+  * 出力はファイル全文と、主要クラス／関数の構成を説明する短い解説。
+  * コードブロック１つにまとめ、実行コマンド例を先頭 docstring に記載。
+  * 日本語コメントを適宜入れるが、変数名・API は英語。
